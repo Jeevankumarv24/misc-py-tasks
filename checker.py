@@ -1,19 +1,19 @@
 import json
 import os
+from urllib.parse import urljoin
 import requests
 from playwright.sync_api import sync_playwright
 
 BOT_TOKEN = os.environ["BOT_TOKEN"]
 CHAT_ID = os.environ["CHAT_ID"]
+PINCODE = "500090"  # Change to your exact 6-digit Hyderabad PIN code
 STATE_FILE = "seen.json"
 
-# FirstCry Hot Wheels catalog sorted by New Arrivals
 CATALOG_URLS = [
     "https://www.firstcry.com/hot-wheels/0/0/113?sort=NewArrivals",
-    "https://www.firstcry.com/hot-wheels/0/0/113",  # Popular / default sort
+    "https://www.firstcry.com/hot-wheels/0/0/113",
 ]
 
-# Edit this list anytime to add or remove car brands / series you want alerts for
 BRAND_KEYWORDS = [
     "porsche", "ferrari", "lamborghini", "bugatti", "mclaren", "pagani",
     "koenigsegg", "nissan", "skyline", "gt-r", "gtr", "datsun", "mazda",
@@ -44,8 +44,27 @@ def send_telegram(message):
     )
 
 
+def set_pincode(page, pincode):
+    try:
+        # Open the FirstCry location/PIN code selector if visible
+        loc_btn = page.locator("#geoLocation, .location_btn, text=Select location").first
+        if loc_btn.count() > 0:
+            loc_btn.click(timeout=5000)
+            page.wait_for_timeout(1500)
+            pin_input = page.locator('input[placeholder*="Pincode" i], input[id*="pin" i]').first
+            if pin_input.count() > 0:
+                pin_input.fill(pincode)
+                apply_btn = page.locator('text=APPLY, button:has-text("Apply")').first
+                if apply_btn.count() > 0:
+                    apply_btn.click(timeout=5000)
+                    page.wait_for_timeout(2000)
+                    print(f"PIN code set to {pincode}")
+    except Exception as e:
+        print(f"Could not set PIN code via UI (continuing anyway): {e}")
+
+
 def scan_firstcry():
-    currently_in_stock = {}  # {url: title}
+    currently_in_stock = {}
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
@@ -54,17 +73,21 @@ def scan_firstcry():
         )
         page = context.new_page()
 
-        for catalog_url in CATALOG_URLS:
-            try:
-                page.goto(catalog_url, wait_until="domcontentloaded", timeout=45000)
-                page.wait_for_timeout(4000)
+        # Load FirstCry once and apply your PIN code
+        page.goto(CATALOG_URLS[0], wait_until="domcontentloaded", timeout=45000)
+        page.wait_for_timeout(3000)
+        set_pincode(page, PINCODE)
 
-                # Scroll down several times to trigger lazy-loaded products
+        for idx, catalog_url in enumerate(CATALOG_URLS):
+            try:
+                if idx > 0:
+                    page.goto(catalog_url, wait_until="domcontentloaded", timeout=45000)
+                    page.wait_for_timeout(3000)
+
                 for _ in range(6):
                     page.mouse.wheel(0, 2500)
                     page.wait_for_timeout(1500)
 
-                # Extract product cards from the page
                 cards = page.locator(".list_block")
                 count = cards.count()
                 print(f"Found {count} product cards on {catalog_url}")
@@ -73,7 +96,6 @@ def scan_firstcry():
                     card = cards.nth(i)
                     card_text = card.inner_text().lower()
 
-                    # Skip out-of-stock listings
                     if "out of stock" in card_text or "notify me" in card_text or "sold out" in card_text:
                         continue
 
@@ -81,12 +103,13 @@ def scan_firstcry():
                     if link_el.count() == 0:
                         continue
 
-                    href = link_el.get_attribute("href") or ""
+                    href = (link_el.get_attribute("href") or "").strip()
                     title = (link_el.get_attribute("title") or link_el.inner_text() or "").strip()
                     if not href:
                         continue
 
-                    full_url = href if href.startswith("http") else f"https://www.firstcry.com{href}"
+                    # Properly handles //www.firstcry.com/... and relative /hot-wheels/... links
+                    full_url = urljoin("https://www.firstcry.com/", href)
                     searchable = f"{title} {full_url}".lower()
 
                     if any(keyword in searchable for keyword in BRAND_KEYWORDS):
@@ -98,8 +121,6 @@ def scan_firstcry():
         browser.close()
 
     previously_seen = load_seen()
-
-    # Alert only for newly listed or restocked matches
     new_hits = [
         (url, title)
         for url, title in currently_in_stock.items()
@@ -107,9 +128,8 @@ def scan_firstcry():
     ]
 
     for url, title in new_hits:
-        send_telegram(f"🚨 Hot Wheels In Stock on FirstCry!\n\n🏎️ {title}\n🔗 {url}")
+        send_telegram(f"🚨 Hot Wheels In Stock (PIN {PINCODE})!\n\n🏎️ {title}\n🔗 {url}")
 
-    # Save current in-stock matches (items that go OOS are dropped so restocks trigger again)
     save_seen(set(currently_in_stock.keys()))
     print(f"Scan complete. Matches in stock: {len(currently_in_stock)} | New alerts sent: {len(new_hits)}")
 
