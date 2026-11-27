@@ -95,6 +95,7 @@ def scan_qcom():
                 try:
                     page.goto(url, wait_until="domcontentloaded", timeout=35000)
                     page.wait_for_timeout(4000)
+                    print(f"[{loc_name} | {site_name}] Page Title: {page.title()}")
 
                     for _ in range(2):
                         page.mouse.wheel(0, 2000)
