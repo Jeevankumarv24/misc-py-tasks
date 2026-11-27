@@ -46,21 +46,48 @@ def send_telegram(message):
 
 def set_pincode(page, pincode):
     try:
-        # Open the FirstCry location/PIN code selector if visible
-        loc_btn = page.locator("#geoLocation, .location_btn, text=Select location").first
-        if loc_btn.count() > 0:
-            loc_btn.click(timeout=5000)
-            page.wait_for_timeout(1500)
-            pin_input = page.locator('input[placeholder*="Pincode" i], input[id*="pin" i]').first
-            if pin_input.count() > 0:
-                pin_input.fill(pincode)
-                apply_btn = page.locator('text=APPLY, button:has-text("Apply")').first
-                if apply_btn.count() > 0:
-                    apply_btn.click(timeout=5000)
-                    page.wait_for_timeout(2000)
-                    print(f"PIN code set to {pincode}")
+        # Target the visible "Enter Pin Code" / "Enter Pincode" input directly
+        pin_input = page.locator('input[placeholder*="Pin" i]').first
+        if pin_input.count() > 0 and pin_input.is_visible():
+            pin_input.fill(pincode)
+            check_btn = page.get_by_text("CHECK", exact=True).first
+            if check_btn.count() > 0:
+                check_btn.click(timeout=5000)
+                page.wait_for_timeout(2000)
+                print(f"PIN code set to {pincode}")
+                return
+        print("PIN code input not visible on page (continuing anyway)")
     except Exception as e:
         print(f"Could not set PIN code via UI (continuing anyway): {e}")
+
+
+def load_all_products(page):
+    """Scrolls down until no new product cards load (handles infinite scroll + View More)."""
+    prev_count = 0
+    stagnant_rounds = 0
+
+    for _ in range(30):  # Max 30 scroll rounds (~600 items capacity)
+        # Scroll to the bottom of the page
+        page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+        page.wait_for_timeout(1500)
+
+        # Click "View More Products" / "Load More" if FirstCry shows a button
+        load_more = page.locator('text=/View More|Load More/i').first
+        if load_more.count() > 0 and load_more.is_visible():
+            try:
+                load_more.click(timeout=3000)
+                page.wait_for_timeout(1500)
+            except Exception:
+                pass
+
+        current_count = page.locator(".list_block").count()
+        if current_count == prev_count:
+            stagnant_rounds += 1
+            if stagnant_rounds >= 3:  # Stop after 3 consecutive scrolls with no new items
+                break
+        else:
+            stagnant_rounds = 0
+            prev_count = current_count
 
 
 def scan_firstcry():
@@ -69,11 +96,10 @@ def scan_firstcry():
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
         context = browser.new_context(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
         )
         page = context.new_page()
 
-        # Load FirstCry once and apply your PIN code
         page.goto(CATALOG_URLS[0], wait_until="domcontentloaded", timeout=45000)
         page.wait_for_timeout(3000)
         set_pincode(page, PINCODE)
@@ -84,9 +110,7 @@ def scan_firstcry():
                     page.goto(catalog_url, wait_until="domcontentloaded", timeout=45000)
                     page.wait_for_timeout(3000)
 
-                for _ in range(6):
-                    page.mouse.wheel(0, 2500)
-                    page.wait_for_timeout(1500)
+                load_all_products(page)
 
                 cards = page.locator(".list_block")
                 count = cards.count()
@@ -108,7 +132,6 @@ def scan_firstcry():
                     if not href:
                         continue
 
-                    # Properly handles //www.firstcry.com/... and relative /hot-wheels/... links
                     full_url = urljoin("https://www.firstcry.com/", href)
                     searchable = f"{title} {full_url}".lower()
 
